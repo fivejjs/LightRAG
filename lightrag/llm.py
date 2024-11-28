@@ -69,12 +69,15 @@ async def openai_complete_if_cache(
     response = await openai_async_client.chat.completions.create(
         model=model, messages=messages, **kwargs
     )
-
+    content = response.choices[0].message.content
+    if r"\u" in content:
+        content = content.encode("utf-8").decode("unicode_escape")
+    # print(content)
     if hashing_kv is not None:
         await hashing_kv.upsert(
             {args_hash: {"return": response.choices[0].message.content, "model": model}}
         )
-    return response.choices[0].message.content
+    return content
 
 
 @retry(
@@ -693,13 +696,17 @@ async def bedrock_embedding(
 
 
 async def hf_embedding(texts: list[str], tokenizer, embed_model) -> np.ndarray:
+    device = next(embed_model.parameters()).device
     input_ids = tokenizer(
         texts, return_tensors="pt", padding=True, truncation=True
-    ).input_ids
+    ).input_ids.to(device)
     with torch.no_grad():
         outputs = embed_model(input_ids)
         embeddings = outputs.last_hidden_state.mean(dim=1)
-    return embeddings.detach().numpy()
+    if embeddings.dtype == torch.bfloat16:
+        return embeddings.detach().to(torch.float32).cpu().numpy()
+    else:
+        return embeddings.detach().cpu().numpy()
 
 
 async def ollama_embedding(texts: list[str], embed_model, **kwargs) -> np.ndarray:
